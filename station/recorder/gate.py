@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from threading import Lock
+from threading import Lock, RLock
 from weakref import WeakValueDictionary
 
 
@@ -8,7 +8,7 @@ class WorkfileGate:
     _registry_lock = Lock()
 
     def __init__(self):
-        self._lock = Lock()
+        self._lock = RLock()
 
     @classmethod
     def for_station(cls, root):

@@ -26,6 +26,7 @@ from station.source.open import read_range
 from station.source.positions import ByteSpan as ByteSpan
 from station.source.positions import InvalidByteRange as InvalidByteRange
 from station.source.positions import SourcePoint as SourcePoint
+from station.submit.service import reconcile_submissions, submission_state, submit_report
 
 
 class StationStateError(ValueError):
@@ -81,6 +82,8 @@ class Station:
                 for entry in volumes[:-1]:
                     if archives.extent(entry.archive_ref) != entry.end:
                         raise StationStateError(f"incomplete sealed volume {entry.volume}")
+                source = SourceFiles(gate, workfile, catalog, archives)
+                reconcile_submissions(gate, workfile, catalog, capture)
                 point = load_checkpoint(capture).point
                 entry = catalog.lookup(point.volume)
                 if entry is None:
@@ -93,7 +96,7 @@ class Station:
         except (OSError, sqlite3.Error, ValueError) as error:
             raise StationStateError(f"cannot initialize station {root.name}: {error}") from error
 
-        return cls(root, SourceFiles(gate, workfile, catalog, archives), capture, reports)
+        return cls(root, source, capture, reports)
 
     @property
     def workfile(self):
@@ -105,6 +108,13 @@ class Station:
 
     def append(self, raw):
         return append_observation(self.source.gate, self.workfile, self.catalog, raw)
+
+    def submit(self, report_key, raw):
+        return submit_report(self.source.gate, self.workfile, self.catalog,
+                             self.capture, report_key, raw)
+
+    def submission(self, report_key):
+        return submission_state(self.capture, report_key)
 
     def rotate(self, *, block_size=65536, after_prefix_block=None, after_prepare=None):
         return rotate_workfile(

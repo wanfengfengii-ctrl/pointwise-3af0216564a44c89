@@ -1,6 +1,8 @@
 import argparse
 import json
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 
 from station import InvalidGustLine, PollCommitFailed, SourcePoint, Station
@@ -79,15 +81,64 @@ def run_day(directory):
             "peak_evidence": evidence}
 
 
+def run_submissions(directory):
+    if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
+        raise ValueError("demo requires a new or empty station directory")
+    station = Station.initialize(Path(directory))
+    station.append(b"5\n")
+    first = station.poll()
+    station.issue([first.batch_id])
+    script = Path(__file__).resolve().parent / "submission_fixture.py"
+    reply_lost = [sys.executable, "-B", str(script), "child", str(station.root),
+                  "submit", "3"]
+    result = subprocess.run(reply_lost, capture_output=True, text=True, timeout=30)
+    if result.returncode != 73:
+        raise AssertionError(f"terminal stand-in missed the byte cut: {result.stderr}")
+    station = Station.initialize(station.root)
+    ledgers = {}
+    for key in ("X", "Y"):
+        entry = station.submission(key)
+        ledgers[key] = {"status": entry["status"], "batch_id": entry["batch_id"],
+                        "ordinal": entry["ordinal"]}
+    station.rotate()
+    station.submit("X", b"07\n")
+    station.append(b"6\n")
+    station.submit("Y", b"07\n")
+    station.append(b"11\n")
+    old = station.poll(chunk_size=1)
+    current = station.poll(chunk_size=1)
+    if old is None or current is None or station.poll() is not None:
+        raise AssertionError("unexpected receipt trail after the lost reply")
+    station = Station.initialize(station.root)
+    received = {}
+    for key, batch, ordinal in (("X", old, 0), ("Y", current, 1)):
+        entry = station.submission(key)
+        span = entry["span"]
+        raw = station.read(span.volume, span.start, span.end)
+        if (entry["status"], entry["batch_id"], entry["ordinal"]) != (
+                "received", batch.batch_id, ordinal) or raw != b"07\n":
+            raise AssertionError(f"unexpected receipt for {key}: {entry}, raw={raw!r}")
+        received[key] = {"span": [span.volume, span.start, span.end],
+                         "batch_id": entry["batch_id"], "ordinal": entry["ordinal"],
+                         "raw": raw.decode("ascii")}
+    return {"lost_reply_ledger": ledgers,
+            "rows": [[line.span.volume, line.span.start, line.span.end, line.value,
+                      line.report_key] for batch in (old, current) for line in batch.lines],
+            "received": received}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run a full weather-station shift")
     parser.add_argument("--directory", type=Path)
     args = parser.parse_args()
     if args.directory is None:
         with TemporaryDirectory(prefix="gust-demo-") as directory:
-            result = run_day(Path(directory))
+            result = run_day(Path(directory) / "shift")
+            result["submissions"] = run_submissions(Path(directory) / "submissions")
     else:
         result = run_day(args.directory)
+        result["submissions"] = run_submissions(args.directory.parent
+                                                / (args.directory.name + "-submissions"))
     print(json.dumps(result, ensure_ascii=False))
 
 

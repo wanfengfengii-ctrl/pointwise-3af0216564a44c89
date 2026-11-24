@@ -6,6 +6,7 @@ from station.capture.receipts import write_batch
 from station.source.chunks import ReadBindingChanged, read_chunk
 from station.source.open import open_read
 from station.source.positions import SourcePoint
+from station.submit.store import span_keys
 
 
 class PollCommitFailed(RuntimeError):
@@ -48,8 +49,9 @@ def poll_next_batch(source, store, *, chunk_size=4096, after_chunk=None):
     if ending == checkpoint.point:
         return None
     try:
-        with store.transaction() as db:
-            batch = write_batch(db, checkpoint.point, ending, lines)
+        with source.gate.hold(), store.transaction() as db:
+            keys = span_keys(db, (line.span for line in lines))
+            batch = write_batch(db, checkpoint.point, ending, lines, keys)
             save_checkpoint(db, checkpoint, ending)
     except (sqlite3.Error, CheckpointMoved) as error:
         raise PollCommitFailed(f"failed to commit capture from {checkpoint.point}") from error
